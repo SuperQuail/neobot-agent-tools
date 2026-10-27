@@ -1,100 +1,146 @@
 # neobot-agent-tools
 
-NeoBot Agent 工具的可复用计算内核：UTF-8 快照、行索引、分页、检索输入准备、进程内资源预算，以及 PTC 值校验与隔离复制。
+为 Python Agent 提供可独立复用的 Rust 计算内核：文件文本快照、有界分页、检索输入准备，以及 PTC（程序化工具调用）的值校验与隔离复制。
 
-Rust 负责纯字节计算，Python 提供稳定接口和可用性回退。包本身不解析聊天身份、不授予路径访问权限，也不直接读取文件。宿主应先完成授权、加锁和有界读取，再把字节交给内核；写入版本与 owner 观察仍由宿主维护。
+Python 提供稳定接口，Rust 加速重复计算，平台 wheel 负责二进制分发。宿主继续负责文件访问、工具权限和执行策略。
 
-## 使用快照
+**当前处于独立工具库整理与联调阶段。** 源码及平台 wheel 已有构建验证，NeoBot 主仓的正式依赖和工具入口整合尚未完成；当前安装方式为下载 CI wheel 或本地构建。普通 `git pull` 只更新源码，不会安装或更新原生模块。
+
+[安装](#安装) · [快速上手](#快速上手) · [API 参考](docs/api.md) · [宿主接入](docs/integration.md) · [开发与分发](docs/development.md) · [性能记录](docs/performance.md)
+
+## 已提供的能力
+
+| 能力 | 主要接口 | 后端与边界 |
+|---|---|---|
+| 文本快照与行索引 | `Snapshot.from_bytes()`、`share()` | Rust／Python；只接收已读取的 UTF-8 字节 |
+| 有界分页与长行续读 | `read_page()`、`ReadPage.as_dict()` | Rust／Python；单页行数和 UTF-8 字节受限 |
+| 检索输入准备 | `for_search()` | Rust／Python；归一化换行，供宿主匹配器使用 |
+| 进程内资源协调 | `FILE_IO_RESOURCES` | Python；共享工作集、操作数和缓存额度 |
+| PTC 值复查与复制 | `PtcValueKernel.validate()`／`copy()` | Rust；无状态遍历，宿主自行提供缺失扩展时的回退 |
+
+本库尚不提供独立的 MCP 服务或完整 Agent 工具运行时。批量文件读取与编辑、无变化写入跳过、ripgrep 进程调度，以及 PTC 的 AST 解释器，目前由 NeoBot 宿主实现；不会把宿主中的能力计作已发布的库接口。
+
+## 安装
+
+使用预编译 wheel 时，用户只需要 **uv 和兼容的 CPython**，不需要 Rust 工具链。发行包名为 `neobot-agent-tools`，Python 导入名为 `neobot_agent_tools`。
+
+### 使用 CI wheel
+
+从 [Wheels 工作流](https://github.com/SuperQuail/neobot-agent-tools/actions/workflows/wheels.yml) 中选择已成功完成的运行，在 Artifacts 下载对应平台的 `wheels-...` 压缩包并解压；GitHub 可能要求登录后下载。
+
+以下为 Windows x64 示例，将 wheel 放在当前目录的 `dist/` 后运行：
+
+```powershell
+uv venv --python 3.13
+uv pip install ./dist/neobot_agent_tools-0.1.0-cp313-abi3-win_amd64.whl
+uv run --no-project --python .venv/Scripts/python.exe python -c "from neobot_agent_tools import backend_info; print(backend_info())"
+```
+
+Linux 选择对应的 x64／ARM64 wheel，安装到项目虚拟环境。CI artifact 目录名见下表，解压后的 `.whl` 才是 uv 的安装输入。
+
+| 平台 | Artifact | 已验证的 Python |
+|---|---|---|
+| Windows x64 | `wheels-x86_64-pc-windows-msvc` | CPython 3.13、3.14 |
+| Linux x64 | `wheels-x86_64-unknown-linux-gnu` | CPython 3.13、3.14，manylinux2014 |
+| Linux ARM64 | `wheels-aarch64-unknown-linux-gnu` | CPython 3.13、3.14，manylinux2014 |
+
+同一平台的 wheel 使用 `abi3-py313`，可供上述两个 Python 版本使用。macOS、Windows ARM64、musl 和 free-threaded Python 尚未列入已验证的支持范围。
+
+### 从源码构建
+
+开发者需准备 Rust、uv 和 Python 3.13，在仓库根目录执行：
+
+```powershell
+uvx --from maturin==1.15.0 maturin build --release --locked --out dist
+uv run --no-project --python 3.13 python scripts/test_wheel.py dist
+```
+
+第二条命令会在隔离环境中分别用 Python 3.13／3.14 安装并测试 wheel，要求实际加载 Rust。构建后可按上面的 wheel 安装方式接入自己的项目。源码构建、Python 回退测试和正式发布步骤见 [开发与分发](docs/development.md)。
+
+## 快速上手
+
+### 读取内存文本并继续翻页
 
 ```python
 import time
 
-from neobot_agent_tools import FILE_IO_RESOURCES, Snapshot, backend_info
+from neobot_agent_tools import FILE_IO_RESOURCES, Snapshot
 from neobot_agent_tools.resources import capture_weight
 
 data = "第一行\r\nsecond\n".encode("utf-8")
-with FILE_IO_RESOURCES.operation(capture_weight(len(data)), deadline=time.monotonic() + 5):
-    snapshot = Snapshot.from_bytes(data, "host-owned-version")
-    page = snapshot.read_page(offset=1, limit=1)
-    assert page.as_dict()["content"] == "第一行\r\n"
+deadline = time.monotonic() + 5
+with FILE_IO_RESOURCES.operation(capture_weight(len(data)), deadline=deadline):
+    snapshot = Snapshot.from_bytes(data, version="example-v1")
+    first = snapshot.read_page(offset=1, limit=1)
+    second = snapshot.read_page(offset=first.next_offset, column=first.next_column, limit=1)
+    assert first.as_dict()["content"] == "第一行\r\n"
+    assert second.as_dict()["content"] == "second\n"
+    assert second.next_offset is None
     assert snapshot.shares_storage(snapshot.share())
-
-print(backend_info())
+    print(snapshot.backend, snapshot.line_count)
 ```
 
-单次输入限 16 MiB，分页最多 2000 行／64 KiB，offset 从 1 开始，column 按 Unicode 字符计数。换行语义与 Python `str.splitlines()` 一致，保留 CRLF 和混合换行。`read_page` 还返回用于宿主观察覆盖范围的字符位置，内核不会据此授予写入权限。
+`offset` 从 1 开始，`column` 从 0 开始，按 Unicode 字符计数。单次输入最多 16 MiB，单页最多 2000 行／64 KiB；长行可按 `next_offset` 和 `next_column` 继续读取。原始混合换行保留，`version` 是宿主提供的标签，本库不会计算文件版本或授予写入权限。
 
-宿主需在捕获／检索期间持有工作集预留，并为长期缓存登记 `snapshot.cost`；示例中的小快照只展示接口，不构成缓存管理器。NeoBot 的 `FileSnapshotCache` 负责缓存登记、变化校验和按文件锁协调。
+`snapshot.for_search()` 返回带有归一化 `search_bytes` 的快照。宿主保留该返回对象后可复用检索输入；本库不启动 ripgrep，也不实现文件发现或正则超时。
 
-## PTC 值内核
+### 复查 PTC 数据并隔离赋值
 
 ```python
 from neobot_agent_tools.ptc_values import PtcValueKernel, native_available
 
-if native_available():
-    values = PtcValueKernel(
-        nodes=16_000,
-        depth=32,
-        items=4_000,
-        string_chars=32_768,
-        integer_bits=256,
-        bytes=262_144,
-    )
-    source = {"rows": [{"id": 1}]}
-    copied = values.copy(source, timeout_seconds=1.0)
-    values.validate(source, timeout_seconds=1.0)
-    assert copied["rows"] is not source["rows"]
+if not native_available():
+    raise RuntimeError("请安装包含 PTC 值内核的兼容 wheel，或由宿主提供 Python 回退")
+
+values = PtcValueKernel(
+    nodes=16_000,
+    depth=32,
+    items=4_000,
+    string_chars=32_768,
+    integer_bits=256,
+    bytes=262_144,
+)
+source = {"rows": [{"id": 1}]}
+values.validate(source, timeout_seconds=1.0)
+copied = values.copy(source, timeout_seconds=1.0)
+copied["rows"][0]["id"] = 2
+assert source["rows"][0]["id"] == 1
 ```
 
-只接受精确的 `str`、`int`、有限 `float`、`bool`、`None`、`list` 和字符串键 `dict`，拒绝子类、任意宿主对象和循环引用。重复别名每次都计入节点、深度和保守 JSON 字节额度，复制时分别创建容器，不能借共享引用绕过上限。字节口径包含 ASCII 转义、分隔符空格和原有布尔／空值的保守成本，支持 256 位整数及 Python 字符串中的孤立代理项。
+`validate()` 完整检查额度，不创建容器副本；`copy()` 逐次复制列表／字典，重复别名也分别复制并计费。只接受精确 JSON 类型，拒绝子类、循环、非有限浮点数和任意宿主对象。上面是常用额度配置，构造函数要求显式传入各项额度。错误码和字节计费规则见 [PTC API](docs/api.md#ptc-值内核)。
 
-`validate` 完整复查而不复制容器；`copy` 在赋值和工具边界创建独立数据。每次调用的计数和祖先集合独立，内核只保存不可变额度，不缓存可变对象或跨 agent 共享环境。遍历 Python 容器时持有 GIL，定期和返回前检查时间；宿主仍需保留异步取消、步数和工具调用预算。这里的时间预算不构成操作系统级硬中断。
+快照的 `backend="auto"` 在扩展不可用时自动回退 Python；`backend="rust"` 会明确失败。PTC 的 `native_available()` 独立检查 `PTC_VALUE_API_VERSION=1`，**本包不内置 PTC 的 Python 回退**，宿主应在能力不可用或自定义深度超过 128 时选择自己的回退实现。
 
-原生深度配置限 1–128；宿主可对更深或超过本机整数表示范围的自定义额度使用自己的 Python 回退。NeoBot 同时兼容未安装包、旧版包和原生扩展不可用的情况，不降低既有配置上限。PTC 接口使用独立的 `PTC_VALUE_API_VERSION=1` 能力标记，扩展缺失时 `native_available()` 返回 `False`，构造内核则明确失败。权限、AST 白名单、工具调度和赋值时机均由宿主控制。
+## 多 agent 与资源边界
 
-## 安装与发布
+同一 Python 解释器通常复用一个 `FILE_IO_RESOURCES`，不要为每个 agent 创建独立额度池。默认限制如下：
 
-发布后由 `neobot-app` 声明版本依赖，用户仍可用 uv 安装 NeoBot。正常安装选择平台 wheel，Rust 编译发生在发布 CI。当前仓库的初始化版本尚不代表 PyPI 上已有可安装发行版。
+| 资源 | 默认额度 |
+|---|---:|
+| 在途文件工作集估算 | 256 MiB |
+| 同时进行的文件操作 | 4 |
+| 其中同时进行的检索 | 1 |
+| 所有已登记缓存的合计额度 | 64 MiB／2048 项 |
+| 缓存清理检查间隔 | 1 秒，按需启动单一线程 |
 
-源码子模块只用于联调，正常运行依赖使用包版本，不把子模块路径设为默认 `tool.uv.sources`，以免部署时触发 Rust 源码构建。
+`Snapshot.share()` 共享不可变底层数据，不复制全文。缓存仍由宿主实现，负责文件变化检查、TTL、`snapshot.cost` 登记与释放；缓存被回收或关闭时须归还额度。各 agent 的文件观察版本和授权状态不在这里共享。多进程各自计数，这些数字是工作集估算，不是操作系统 RSS 硬限制。
 
-首版构建目标为 Windows x64、Linux x64／ARM64；使用 CPython 3.13 的 stable ABI，并在普通 CPython 3.13、3.14 验证同一平台 wheel。free-threaded Python 与其他平台在经过实际构建和测试前不列入支持范围。
+文件快照计算可释放 GIL；PTC 遍历可变 Python 容器时保持 GIL，每次调用独立持有计数和祖先集合，不跨调用缓存可变环境。PTC 时间预算定期及返回前检查，异步取消和整个程序的超时仍由宿主控制。接入顺序和锁约定见 [宿主接入](docs/integration.md)。
 
-## 本地构建与验证
+## 性能与验证
 
-需要 Rust、uv，以及 Python 3.13。以下命令在仓库根目录执行：
+在 Windows x64、CPython 3.13.14 的一次本地 release 实测中：
 
-```powershell
-uvx --from maturin==1.15.0 maturin build --release --locked --out dist
-python scripts/test_wheel.py dist
-```
+| 场景 | 改动前 | Rust 路径 | 倍率 |
+|---|---:|---:|---:|
+| 单次复制 800 行 PTC 数据 | 1.604 ms | 0.245 ms | 6.5 倍 |
+| 单次复查 800 行 PTC 数据 | 1.543 ms | 0.179 ms | 8.6 倍 |
+| NeoBot PTC 中循环计数 800 行 | 2533.719 ms | 299.794 ms | 8.5 倍 |
 
-`test_wheel.py` 使用 uv 创建隔离测试环境，在 Python 3.13／3.14 安装同一 wheel，且要求原生后端实际可用，不会用 Python 回退冒充原生验证。纯 Python 回退也由同一组兼容性测试覆盖。
+前两项为值内核，最后一项包含本地 NeoBot 解释器及环境复查。数据不包含模型、网络或文件 I/O，不能直接换算为整个 Agent 的响应速度。[性能记录](docs/performance.md) 提供采样口径、原始数据和独立内核复现命令。
 
-```powershell
-cargo fmt --check
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --locked
-```
+独立仓库已覆盖 Rust 单测、Python 快照回退、资源协调及原生 PTC；平台 wheel 在 CPython 3.13／3.14 验证。构建状态以 [Wheels 工作流](https://github.com/SuperQuail/neobot-agent-tools/actions/workflows/wheels.yml) 为准，开发检查与目录说明见 [开发与分发](docs/development.md)，中文注释及可读性约定见 [AGENTS.md](AGENTS.md)。
 
-Windows 使用 uv 的 Python 时，如需指定 Rust 绑定解释器，可设置 `PYO3_PYTHON` 为对应的 Python 可执行文件路径。
+## 许可证
 
-## 并发与内存边界
-
-`FILE_IO_RESOURCES` 是同一 Python 解释器内的共享协调器。默认工作集预留 256 MiB、最多 4 个文件操作／1 个检索；所有注册缓存合计 64 MiB／2048 项，按需启动单一清理线程。缓存通过 `register/retain/release/unregister` 登记，宿主缓存需实现 `expire()`；关闭或回收后归还额度。
-
-这些额度是工作集估算和缓存记账，不是 OS 级 RSS 硬限制。多进程分别计数。宿主必须在文件锁之前申请额度，文件快照的原生计算使用 `Python::detach` 释放 GIL，并在计算返回后才释放预留。原生快照为不可变共享存储，`share()` 不复制整份内容。PTC 值内核不使用文件缓存预算，仍受宿主每次运行的 JSON 额度限制。
-
-## 发布配置
-
-CI 构建与测试通过后，标签发布工作流可以使用 PyPI Trusted Publishing。组织维护者需在 PyPI 配置本仓库、发布 workflow 和 `pypi` environment 的信任关系。初始化阶段只构建 wheel，不自动创建发布标签或上传 PyPI。
-
-原生源码与 Python facade 使用同一版本和 `API_VERSION`。加载状态可由 `backend_info()` 查看；原生模块缺失或无法加载时，auto 模式使用 Python 后端并给出原因，`backend="rust"` 则明确失败。
-
-## 开发结构与规范
-
-`src/core.rs` 维护快照与分页，`src/core/index.rs` 负责行索引和 Unicode 检查点，`src/core/lines.rs` 负责换行扫描与检索归一化；`src/ptc_values/` 负责有界 JSON 遍历与复制。`src/lib.rs` 仅处理 Python 绑定和协议转换。Python 快照 facade、回退与资源协调分别位于 `snapshots.py`、`_fallback.py`、`resources.py`；PTC facade 位于 `ptc_values.py`。
-
-Rust 和 Python 均优先采用提前返回及职责明确的函数，内部多字段状态使用具名类型；仅在绑定边界保留兼容元组。解释性注释、Rust 文档注释和 Python docstring 使用中文，说明所有权、UTF-8 边界、预算和锁顺序。完整约定见 [AGENTS.md](AGENTS.md)。
-
-`scripts/benchmark.py` 可针对已安装的 release wheel 度量快照创建、全文分页和检索输入准备，并核对最终内容和共享存储。它只度量内存接口，不包含文件系统与宿主授权耗时；比较时应交替运行新旧 wheel，并记录同机多次采样的中位数及缓存记账。
+[MIT](LICENSE)

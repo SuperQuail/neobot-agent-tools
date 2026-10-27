@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "neobot-agent-tools"
 version = "0.1.0"
-description = "NeoBot Agent 工具的文件快照、分页与共享资源预算"
+description = "NeoBot Agent 工具的文件快照、有界分页、资源协调与 PTC 值计算内核"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
