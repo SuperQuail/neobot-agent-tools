@@ -64,3 +64,11 @@ Windows 使用 uv 的 Python 时，如需指定 Rust 绑定解释器，可设置
 CI 构建与测试通过后，标签发布工作流可以使用 PyPI Trusted Publishing。组织维护者需在 PyPI 配置本仓库、发布 workflow 和 `pypi` environment 的信任关系。初始化阶段只构建 wheel，不自动创建发布标签或上传 PyPI。
 
 原生源码与 Python facade 使用同一版本和 `API_VERSION`。加载状态可由 `backend_info()` 查看；原生模块缺失或无法加载时，auto 模式使用 Python 后端并给出原因，`backend="rust"` 则明确失败。
+
+## 开发结构与规范
+
+`src/core.rs` 维护快照与分页，`src/core/index.rs` 负责行索引和 Unicode 检查点，`src/core/lines.rs` 负责换行扫描与检索归一化；`src/lib.rs` 仅处理 Python 绑定和协议转换。Python facade、回退与资源协调分别位于 `snapshots.py`、`_fallback.py`、`resources.py`。
+
+Rust 和 Python 均优先采用提前返回及职责明确的函数，内部多字段状态使用具名类型；仅在绑定边界保留兼容元组。解释性注释、Rust 文档注释和 Python docstring 使用中文，说明所有权、UTF-8 边界、预算和锁顺序。完整约定见 [AGENTS.md](AGENTS.md)。
+
+`scripts/benchmark.py` 可针对已安装的 release wheel 度量快照创建、全文分页和检索输入准备，并核对最终内容和共享存储。它只度量内存接口，不包含文件系统与宿主授权耗时；比较时应交替运行新旧 wheel，并记录同机多次采样的中位数及缓存记账。

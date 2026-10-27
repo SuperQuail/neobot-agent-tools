@@ -1,4 +1,4 @@
-//! Python bindings for immutable, file-system independent Agent text snapshots.
+//! 将不可变的文本快照内核绑定到 Python，不提供文件系统访问权限。
 #![deny(missing_docs)]
 
 mod core;
@@ -11,7 +11,10 @@ use pyo3::exceptions::{PyIndexError, PyMemoryError, PyUnicodeDecodeError, PyValu
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::core::{CoreError, Page, SnapshotData};
+use crate::core::{CoreError, Row, SnapshotData};
+
+// 只在 Python 绑定边界沿用已有五元组协议，内核内部使用具名分页结果。
+type PythonPage = (Vec<Row>, usize, usize, Option<usize>, Option<usize>);
 
 fn python_error(error: CoreError) -> PyErr {
     match error {
@@ -31,8 +34,7 @@ impl Snapshot {
     #[new]
     fn new(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let bytes = data.as_bytes();
-        // PyBytes is immutable and the bound argument owns its reference for the
-        // duration of detach. Only its immutable slice crosses this boundary.
+        // PyBytes 不可变，绑定参数在 detach 期间持有引用；跨越 GIL 边界的仅为只读字节切片。
         let result = py.detach(|| SnapshotData::create(bytes));
         match result {
             Ok(inner) => Ok(Self { inner }),
@@ -88,9 +90,17 @@ impl Snapshot {
         limit: usize,
         column: usize,
         budget: usize,
-    ) -> PyResult<Page> {
-        py.detach(|| self.inner.page(offset, limit, column, budget))
-            .map_err(python_error)
+    ) -> PyResult<PythonPage> {
+        let page = py
+            .detach(|| self.inner.page(offset, limit, column, budget))
+            .map_err(python_error)?;
+        Ok((
+            page.rows,
+            page.start_character,
+            page.end_character,
+            page.next_offset,
+            page.next_column,
+        ))
     }
     fn normalized<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = py

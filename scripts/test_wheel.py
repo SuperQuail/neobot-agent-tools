@@ -1,4 +1,4 @@
-"""Test the built wheel in isolated uv environments, never the editable source."""
+"""在隔离的 uv 环境验证已构建 wheel，确保实际加载原生扩展。"""
 
 import argparse
 import subprocess

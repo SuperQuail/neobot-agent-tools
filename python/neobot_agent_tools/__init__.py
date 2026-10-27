@@ -1,4 +1,4 @@
-"""Reusable, bounded Agent buffers and process-local resource accounting."""
+"""提供可复用的有界 Agent 快照，以及进程内资源协调。"""
 
 from ._version import API_VERSION, __version__
 from .resources import FILE_IO_RESOURCES, FileChangedDuringAdmission, FileIoResources, FileResourceError

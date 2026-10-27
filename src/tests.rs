@@ -28,7 +28,7 @@ fn long_unicode_line_page_respects_byte_budget() {
     let value = SnapshotData::create("汉😀汉\n".as_bytes()).unwrap();
     let page = value.page(1, 1, 0, 6).unwrap();
     assert_eq!(
-        (page.0, page.3, page.4),
+        (page.rows, page.next_offset, page.next_column),
         (vec![(1, "汉".to_owned(), 0)], Some(1), Some(1))
     );
 }

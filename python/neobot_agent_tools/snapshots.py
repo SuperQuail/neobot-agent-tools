@@ -1,4 +1,4 @@
-"""Stable buffer API. Authorization, file locks and observations belong to the host."""
+"""提供稳定的字节快照接口；授权、文件锁和 owner 观察记录仍由宿主维护。"""
 
 import sys
 from dataclasses import dataclass, replace
@@ -15,11 +15,12 @@ try:
     if _native.API_VERSION != API_VERSION or _native.VERSION != __version__:
         raise ImportError("Native extension version does not match its Python facade")
 except (ImportError, OSError) as exc:
-    _native, _NATIVE_ERROR = None, str(exc)
+    _native = None
+    _NATIVE_ERROR = str(exc)
 
 
 def backend_info() -> dict:
-    """Describe the available backend without importing NeoBot or accessing files."""
+    """报告后端状态，不导入 NeoBot，也不访问文件。"""
     return {
         "backend": "rust" if _native is not None else "python",
         "version": __version__,
@@ -35,7 +36,7 @@ def _integer(value, name, minimum, maximum):
 
 @dataclass(frozen=True)
 class ReadPage:
-    """Bounded output plus character positions for host-owned observation tracking."""
+    """保存有界分页结果和字符位置，供宿主累计自己的读取观察范围。"""
 
     rows: tuple
     start: int
@@ -67,10 +68,10 @@ class ReadPage:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Immutable UTF-8 buffer and line index shared by reference between agents.
+    """在 Agent 间按引用共享不可变的 UTF-8 内容和行索引。
 
-    The host reserves working memory before construction and retains cache quota
-    for ``cost``. This low-level buffer API does not grant filesystem authority.
+    宿主须在构建前预留工作集，并按 ``cost`` 登记缓存额度。
+    本接口只处理内存字节，不授予文件系统访问权限。
     """
 
     _core: object
@@ -88,9 +89,9 @@ class Snapshot:
             raise ValueError("backend must be auto, rust or python")
         if backend == "rust" and _native is None:
             raise RuntimeError(f"Native backend unavailable: {_NATIVE_ERROR}")
-        use_native = backend != "python" and _native is not None
-        core = _native.Snapshot(data) if use_native else SnapshotCore(data)
-        return cls(core, version, "rust" if use_native else "python")
+        if backend == "python" or _native is None:
+            return cls(SnapshotCore(data), version, "python")
+        return cls(_native.Snapshot(data), version, "rust")
 
     @property
     def text(self):
@@ -142,24 +143,28 @@ class Snapshot:
         _integer(max_bytes, "max_bytes", 0, MAX_TEXT_BYTES)
         rows, start, end, following, next_column = self._core.read_page(offset, limit, column, max_bytes)
         return ReadPage(
-            tuple(rows),
-            start,
-            end,
-            following,
-            next_column,
-            offset,
-            column,
-            self.line_count,
-            self.char_len,
-            self.size,
-            self.version,
+            rows=tuple(rows),
+            start=start,
+            end=end,
+            next_offset=following,
+            next_column=next_column,
+            offset=offset,
+            column=column,
+            total_lines=self.line_count,
+            total_chars=self.char_len,
+            size=self.size,
+            version=self.version,
         )
 
     def for_search(self):
-        return self if self.search_bytes is not None else replace(self, search_bytes=self._core.normalized())
+        if self.search_bytes is not None:
+            return self
+        return replace(self, search_bytes=self._core.normalized())
 
     def share(self):
         return replace(self, _core=self._core.share())
 
     def shares_storage(self, other):
-        return isinstance(other, Snapshot) and self.backend == other.backend and self._core.shares_storage(other._core)
+        if not isinstance(other, Snapshot) or self.backend != other.backend:
+            return False
+        return self._core.shares_storage(other._core)

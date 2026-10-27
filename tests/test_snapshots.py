@@ -117,6 +117,16 @@ def test_shared_snapshot_can_be_read_from_eight_threads():
     assert all(page == pages[0] for page in pages)
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_sparse_unicode_checkpoints_keep_arbitrary_fragment_columns(backend):
+    """跨越字节检查点时，字符列位置仍须与 Python 字符串切片严格一致。"""
+    text = "a" * 253 + "😀汉" * 1300 + "z" * 511 + "\r\n"
+    snapshot = Snapshot.from_bytes(text.encode(), "v", backend=backend)
+    for column in range(0, len(text) + 1, 17):
+        for limit in [0, 1, 31, 256, 65536]:
+            assert snapshot.read_fragment(0, column, limit) == (text[column : column + limit], len(text) - column)
+
+
 def test_input_size_limit_is_checked_before_snapshot_construction():
     with pytest.raises(ValueError, match="16777216"):
         Snapshot.from_bytes(b"x" * (16 * 1024 * 1024 + 1), "v")
