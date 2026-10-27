@@ -1,0 +1,41 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "neobot-agent-tools"
+version = "0.1.0"
+description = "NeoBot Agent 工具的文件快照、分页与共享资源预算"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "SuperQuail"}]
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Repository = "https://github.com/SuperQuail/neobot-agent-tools"
+Issues = "https://github.com/SuperQuail/neobot-agent-tools/issues"
+
+[tool.maturin]
+python-source = "python"
+module-name = "neobot_agent_tools._native"
+features = ["pyo3/abi3-py313"]
+include = ["python/neobot_agent_tools/py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "ruff>=0.15,<0.17"]

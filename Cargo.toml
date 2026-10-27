@@ -1,0 +1,25 @@
+[package]
+name = "neobot-agent-tools"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Bounded immutable text snapshots for Python agent tools"
+license = "MIT"
+repository = "https://github.com/SuperQuail/neobot-agent-tools"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+memchr = "2"
+pyo3 = { version = "=0.29.3", features = ["abi3-py313"] }
+thiserror = "2"
+
+[lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
