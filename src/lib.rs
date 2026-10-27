@@ -1,7 +1,8 @@
-//! 将不可变的文本快照内核绑定到 Python，不提供文件系统访问权限。
+//! 将文本快照及 PTC 值内核绑定到 Python，不提供文件系统访问或工具调度权限。
 #![deny(missing_docs)]
 
 mod core;
+mod ptc_values;
 #[cfg(test)]
 mod tests;
 
@@ -121,6 +122,7 @@ impl Snapshot {
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Snapshot>()?;
+    ptc_values::register(module)?;
     module.add("API_VERSION", 1)?;
     module.add("VERSION", env!("CARGO_PKG_VERSION"))?;
     Ok(())
